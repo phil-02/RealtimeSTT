@@ -34,7 +34,7 @@ if __name__ == '__main__':
         silero_sensitivity=0.3,
 
         # === EARLY TRANSCRIPTION (speeds up final result) ===
-        early_transcription_on_silence=0.1,
+        early_transcription_on_silence=1.7,
         
         language="en",
     )
