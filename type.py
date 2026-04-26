@@ -28,13 +28,14 @@ if __name__ == '__main__':
         
         # === SPEED OPTIMIZATIONS ===
         beam_size=1,
+        batch_size=0,
         
         # === ALLOW 2s PAUSES BETWEEN SENTENCES ===
-        post_speech_silence_duration=2.0,
+        post_speech_silence_duration=1.5,
         silero_sensitivity=0.3,
 
         # === EARLY TRANSCRIPTION (speeds up final result) ===
-        early_transcription_on_silence=1.7,
+        early_transcription_on_silence=1.2,
         
         language="en",
     )
