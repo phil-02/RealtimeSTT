@@ -52,7 +52,15 @@ CONTROL_CHARS = {"\n": NAMED_KEYS["Return"], "\t": NAMED_KEYS["Tab"]}
 
 
 class PortalError(RuntimeError):
-    """The portal refused, or the keyboard session ended."""
+    """The portal refused, or the keyboard session ended.
+
+    `sent` counts the keysyms of the failed call that did reach the focused
+    application, so callers can keep their record of the screen accurate.
+    """
+
+    def __init__(self, message, sent=0):
+        super().__init__(message)
+        self.sent = sent
 
 
 def char_keysym(char):
@@ -102,30 +110,49 @@ class PortalKeyboard:
                 self._start()
 
     def type(self, text):
-        self._send([char_keysym(char) for char in text])
+        return self._send([char_keysym(char) for char in text])
 
     def key(self, name, count=1):
-        self._send([NAMED_KEYS[name]] * count)
+        return self._send([NAMED_KEYS[name]] * count)
 
     def close(self):
         with self._lock:
             self._close()
 
     def _send(self, keysyms):
+        """Send keysyms, starting a fresh session if the current one died.
+
+        GNOME Shell closes every RemoteDesktop session when the screen locks
+        (main.js inhibits remote access outside screencast-capable session
+        modes), and the person can also stop it from the top bar. The first
+        keystroke after that fails, so reconnect once -- silently when the
+        restore token is still honoured -- and resume where the dead session
+        stopped. Returns the number of keysyms sent.
+        """
         with self._lock:
-            if self._session is None:
-                self._start()
-            try:
-                for keysym in keysyms:
-                    self._call("NotifyKeyboardKeysym", "oa{sv}iu",
-                               self._session, {}, keysym, KEY_PRESSED)
-                    self._call("NotifyKeyboardKeysym", "oa{sv}iu",
-                               self._session, {}, keysym, KEY_RELEASED)
-            except PortalError:
-                # Usually access was revoked from the top bar. Drop the dead
-                # session so the next call starts (and if needed asks) again.
-                self._close()
-                raise
+            sent = 0
+            # Retry only a session that was already running: if starting one
+            # fails or is declined, asking again at once would not help.
+            retry = self._session is not None
+            while True:
+                try:
+                    if self._session is None:
+                        self._start()
+                    for keysym in keysyms[sent:]:
+                        self._call("NotifyKeyboardKeysym", "oa{sv}iu",
+                                   self._session, {}, keysym, KEY_PRESSED)
+                        # A delivered press has typed the character; never
+                        # resend it, even if the release below fails.
+                        sent += 1
+                        self._call("NotifyKeyboardKeysym", "oa{sv}iu",
+                                   self._session, {}, keysym, KEY_RELEASED)
+                    return sent
+                except PortalError as error:
+                    # Drop the dead session; closing it releases any held key.
+                    self._close()
+                    if not retry:
+                        raise PortalError(str(error), sent) from error
+                    retry = False
 
     def _start(self):
         self._conn = open_dbus_connection(bus="SESSION")

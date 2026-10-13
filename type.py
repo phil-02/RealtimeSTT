@@ -194,40 +194,42 @@ def apply_vocabulary(text):
 
 
 def send_keys(action, *args):
-    """Run one keyboard action, reporting rather than raising on failure.
+    """Run one keyboard action; return how many keysyms reached the screen.
 
     These run inside recorder callbacks, so an exception would take down the
-    recorder thread. A failed session is dropped and the next call asks again.
+    recorder thread. The portal reconnects once if its session died (screen
+    lock ends it); a failure that survives that is reported, not raised.
     """
     from portal_keyboard import PortalError
 
     try:
-        action(*args)
+        return action(*args)
     except PortalError as error:
         print(f"Keyboard input failed: {error}")
+        return error.sent
 
 
 def type_text(text):
-    """Type text through the RemoteDesktop portal (supports Unicode)."""
-    send_keys(keyboard.type, text)
+    """Type text through the RemoteDesktop portal (supports Unicode).
+
+    Returns the number of characters typed, which is len(text) on success.
+    """
+    return send_keys(keyboard.type, text)
 
 
 def press_backspace(count):
     """Erase provisional characters before publishing the final result."""
-    if count > 0:
-        send_keys(keyboard.key, "BackSpace", count)
+    return count <= 0 or send_keys(keyboard.key, "BackSpace", count) == count
 
 
 def move_cursor_left(count):
     """Move left within the provisional text without changing it."""
-    if count > 0:
-        send_keys(keyboard.key, "Left", count)
+    return count <= 0 or send_keys(keyboard.key, "Left", count) == count
 
 
 def move_cursor_right(count):
     """Return to the end after applying right-to-left corrections."""
-    if count > 0:
-        send_keys(keyboard.key, "Right", count)
+    return count <= 0 or send_keys(keyboard.key, "Right", count) == count
 
 
 def on_stabilized_delta(event):
@@ -240,22 +242,24 @@ def on_stabilized_delta(event):
     if not typed:
         chunk = chunk[:1].upper() + chunk[1:]
     chunk = apply_vocabulary(chunk)
-    type_text(chunk)
-    typed += chunk
+    # Record only what reached the screen: the final edit below backspaces
+    # over `typed`, and must never erase text that was already there.
+    typed += chunk[:type_text(chunk)]
 
 
 def on_recording_stop():
     """Publish likely terminal punctuation before final decoding starts."""
     global typed
     if typed and not typed[-1].isspace() and not typed.endswith((".", "?", "!")):
-        type_text(".")
-        typed += "."
+        typed += "."[:type_text(".")]
 
 
 def on_transcription_finished(text):
     """Apply minimal local edits to make provisional text match Parakeet."""
     global typed
     final = apply_vocabulary(text) if text else ""
+    # Any failed step below leaves the cursor somewhere unknown, so stop
+    # editing rather than risk deleting the person's own text.
     if not final:
         press_backspace(len(typed))
         typed = ""
@@ -267,21 +271,22 @@ def on_transcription_finished(text):
         if tag == "equal":
             continue
 
-        move_cursor_left(cursor - typed_end)
+        if not move_cursor_left(cursor - typed_end):
+            break
         cursor = typed_end
 
         erase_count = typed_end - typed_start
-        if erase_count:
-            press_backspace(erase_count)
-            cursor -= erase_count
+        if not press_backspace(erase_count):
+            break
+        cursor -= erase_count
 
         replacement = final[final_start:final_end]
-        if replacement:
-            type_text(replacement)
-            cursor += len(replacement)
-
-    move_cursor_right(len(final) - cursor)
-    type_text("\n")
+        if replacement and type_text(replacement) < len(replacement):
+            break
+        cursor += len(replacement)
+    else:
+        if move_cursor_right(len(final) - cursor):
+            type_text("\n")
     typed = ""
 
 
